@@ -60,32 +60,34 @@ jobs:
           }
         shell: powershell
 
-      # === FIXED STEP: Escaped Quotes Correctly ===
+      # === FIXED STEP: Simplified Quotes ===
       - name: Setup Persistent Z Drive and Browsers
         run: |
           # Startup Script for Z: Drive
           $startupFolder = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
           $batchFile = "$startupFolder\MapDrive.bat"
-          Set-Content -Path $batchFile -Value "@echo off`nsubst Z: ""$env:LOCAL_SYNC_PATH"""
+          # Simple string concatenation to avoid quote issues
+          $cmd = "@echo off`nsubst Z: " + '"' + $env:LOCAL_SYNC_PATH + '"'
+          Set-Content -Path $batchFile -Value $cmd
 
-          # Configure Edge
+          # Configure Edge (Using Single Quotes for wrapper)
           $desktop = "C:\Users\Public\Desktop"
           $wshShell = New-Object -ComObject WScript.Shell
           $edgeLnk = "$desktop\Microsoft Edge.lnk"
           if (Test-Path $edgeLnk) {
               $shortcut = $wshShell.CreateShortcut($edgeLnk)
-              # FIX: Added backticks before inner quotes
-              $shortcut.Arguments = "--user-data-dir="Z:\EdgeProfile""
+              # FIX: Using single quotes outside, double quotes inside
+              $shortcut.Arguments = '--user-data-dir="Z:\EdgeProfile"'
               $shortcut.Save()
               Write-Host "Edge Configured for Z: Drive"
           }
 
-          # Configure Chrome
+          # Configure Chrome (Using Single Quotes for wrapper)
           $chromeLnk = "$desktop\Google Chrome.lnk"
           if (Test-Path $chromeLnk) {
               $shortcut = $wshShell.CreateShortcut($chromeLnk)
-              # FIX: Added backticks before inner quotes
-              $shortcut.Arguments = "--user-data-dir="Z:\ChromeProfile""
+              # FIX: Using single quotes outside, double quotes inside
+              $shortcut.Arguments = '--user-data-dir="Z:\ChromeProfile"'
               $shortcut.Save()
               Write-Host "Chrome Configured for Z: Drive"
           }
@@ -122,10 +124,16 @@ jobs:
               Write-Host "Backup Complete."
           }
 
+      # === FIXED CLEANUP: Checks if Tailscale exists first ===
       - name: Cleanup Tailscale (Release Name)
         if: always() 
         run: |
-          Write-Host "Logging out to free up hostname..."
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
-          Write-Host "Logout Successful"
+          $tsPath = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (Test-Path $tsPath) {
+              Write-Host "Logging out to free up hostname..."
+              & $tsPath logout
+              Write-Host "Logout Successful"
+          } else {
+              Write-Host "Tailscale was not installed, skipping logout."
+          }
         shell: powershell
