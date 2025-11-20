@@ -1,0 +1,126 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    env:
+      STATIC_HOSTNAME: "my-github-rdp"
+      RDP_USER: "RDP"
+      RCLONE_REMOTE_PATH: "gdrive:MyRDPData" 
+      LOCAL_SYNC_PATH: 'C:\PersistentData'
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Create RDP User
+        run: |
+          if (-not $env:RDP_PASSWORD) { Write-Error "Error: RDP_PASSWORD secret nahi mila!"; exit 1 }
+          $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name $env:RDP_USER -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USER
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USER
+
+      - name: Install Rclone
+        run: |
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "rclone.zip"
+          Expand-Archive -Path "rclone.zip" -DestinationPath "C:\rclone"
+          Remove-Item "rclone.zip"
+          Copy-Item -Path "C:\rclone\*\rclone.exe" -Destination "C:\Windows\System32\"
+        shell: powershell
+
+      - name: Configure Rclone
+        run: |
+          if (-not $env:RCLONE_CONF) { Write-Error "Error: RCLONE_CONF secret nahi mila!"; exit 1 }
+          New-Item -ItemType Directory -Force -Path "$env:APPDATA\rclone"
+          Set-Content -Path "$env:APPDATA\rclone\rclone.conf" -Value $env:RCLONE_CONF
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        shell: powershell
+
+      - name: Initial Data Download
+        run: |
+          Write-Host "Checking Google Drive data..."
+          $remote = $env:RCLONE_REMOTE_PATH
+          $local = $env:LOCAL_SYNC_PATH
+          New-Item -ItemType Directory -Force -Path $local | Out-Null
+          & rclone sync $remote $local --progress --create-empty-src-dirs
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "Warning: Folder not found on Drive (First Run). Creating new."
+              exit 0 
+          }
+        shell: powershell
+      
+      # === 🔥 UPDATED STEP: Chrome & Edge Persistence 🔥 ===
+      - name: Setup Persistent Z Drive and Browsers
+        run: |
+          # 1. Startup Script for Z: Drive
+          $startupFolder = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+          $batchFile = "$startupFolder\MapDrive.bat"
+          Set-Content -Path $batchFile -Value "@echo off`nsubst Z: ""$env:LOCAL_SYNC_PATH"""
+
+          # 2. Configure Edge (Z: Drive Profile)
+          $desktop = "C:\Users\Public\Desktop"
+          $wshShell = New-Object -ComObject WScript.Shell
+          
+          $edgeLnk = "$desktop\Microsoft Edge.lnk"
+          if (Test-Path $edgeLnk) {
+              $shortcut = $wshShell.CreateShortcut($edgeLnk)
+              $shortcut.Arguments = "--user-data-dir="Z:\EdgeProfile""
+              $shortcut.Save()
+              Write-Host "Edge Configured for Z: Drive"
+          }
+
+          # 3. Configure Chrome (Z: Drive Profile)
+          # Pehle check karo Chrome installed hai ya nahi (GitHub runners par hota hai)
+          $chromeLnk = "$desktop\Google Chrome.lnk"
+          if (Test-Path $chromeLnk) {
+              $shortcut = $wshShell.CreateShortcut($chromeLnk)
+              $shortcut.Arguments = "--user-data-dir="Z:\ChromeProfile""
+              $shortcut.Save()
+              Write-Host "Chrome Configured for Z: Drive"
+          } else {
+              Write-Host "Chrome shortcut not found!"
+          }
+          
+          # 4. Clean Desktop (Remove everything except Edge, Chrome, PersistentData)
+          Get-ChildItem $desktop | Where-Object { 
+              $_.Name -notlike "Microsoft Edge" -and 
+              $_.Name -notlike "Google Chrome" -and 
+              $_.Name -notlike "PersistentData" 
+          } | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+          Write-Host "Desktop Cleaned"
+        shell: powershell
+      # =====================================================
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          cmd /c "msiexec.exe /i $installerPath /quiet /norestart"
+        shell: powershell
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:STATIC_HOSTNAME
+          echo "TAILSCALE_HOSTNAME=$env:STATIC_HOSTNAME" >> $env:GITHUB_ENV
+
+      - name: Maintain Connection and Backup
+        run: |
+          Write-Host "RDP READY. Hostname: $env:TAILSCALE_HOSTNAME"
+          while ($true) {
+              Start-Sleep -Seconds 600
+              Write-Host "Auto-Backup started..."
+              Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
+              Write-Host "Backup Complete."
+          }
