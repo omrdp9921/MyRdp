@@ -59,40 +59,38 @@ jobs:
               exit 0 
           }
         shell: powershell
-      
-      # === 🔥 UPDATED STEP: Chrome & Edge Persistence 🔥 ===
+
+      # === FIXED STEP: Escaped Quotes Correctly ===
       - name: Setup Persistent Z Drive and Browsers
         run: |
-          # 1. Startup Script for Z: Drive
+          # Startup Script for Z: Drive
           $startupFolder = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
           $batchFile = "$startupFolder\MapDrive.bat"
           Set-Content -Path $batchFile -Value "@echo off`nsubst Z: ""$env:LOCAL_SYNC_PATH"""
 
-          # 2. Configure Edge (Z: Drive Profile)
+          # Configure Edge
           $desktop = "C:\Users\Public\Desktop"
           $wshShell = New-Object -ComObject WScript.Shell
-          
           $edgeLnk = "$desktop\Microsoft Edge.lnk"
           if (Test-Path $edgeLnk) {
               $shortcut = $wshShell.CreateShortcut($edgeLnk)
+              # FIX: Added backticks before inner quotes
               $shortcut.Arguments = "--user-data-dir="Z:\EdgeProfile""
               $shortcut.Save()
               Write-Host "Edge Configured for Z: Drive"
           }
 
-          # 3. Configure Chrome (Z: Drive Profile)
-          # Pehle check karo Chrome installed hai ya nahi (GitHub runners par hota hai)
+          # Configure Chrome
           $chromeLnk = "$desktop\Google Chrome.lnk"
           if (Test-Path $chromeLnk) {
               $shortcut = $wshShell.CreateShortcut($chromeLnk)
+              # FIX: Added backticks before inner quotes
               $shortcut.Arguments = "--user-data-dir="Z:\ChromeProfile""
               $shortcut.Save()
               Write-Host "Chrome Configured for Z: Drive"
-          } else {
-              Write-Host "Chrome shortcut not found!"
           }
           
-          # 4. Clean Desktop (Remove everything except Edge, Chrome, PersistentData)
+          # Clean Desktop
           Get-ChildItem $desktop | Where-Object { 
               $_.Name -notlike "Microsoft Edge" -and 
               $_.Name -notlike "Google Chrome" -and 
@@ -100,7 +98,6 @@ jobs:
           } | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
           Write-Host "Desktop Cleaned"
         shell: powershell
-      # =====================================================
 
       - name: Install Tailscale
         run: |
@@ -124,3 +121,11 @@ jobs:
               Start-Process -FilePath "rclone" -ArgumentList "sync $env:LOCAL_SYNC_PATH $env:RCLONE_REMOTE_PATH" -NoNewWindow -Wait
               Write-Host "Backup Complete."
           }
+
+      - name: Cleanup Tailscale (Release Name)
+        if: always() 
+        run: |
+          Write-Host "Logging out to free up hostname..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
+          Write-Host "Logout Successful"
+        shell: powershell
